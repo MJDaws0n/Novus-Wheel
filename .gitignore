@@ -1,2 +1,5 @@
 ODrive_v3.6-56V_fw-0.5.6_firmware.bin
 ODrive_v3.6-56V_fw-0.5.6_firmware.elf
+venv
+pycache__/
+__pycache__/

@@ -10,6 +10,21 @@ from typing import Any
 import odrive
 
 
+def _windows_usb_troubleshooting_hint() -> str:
+    # libusb error -5 on Windows is typically LIBUSB_ERROR_ACCESS.
+    # Most commonly: incorrect driver bound to the ODrive interface (needs WinUSB),
+    # or another process has exclusive access.
+    return (
+        "Windows USB hint: The ODrive Python tools use libusb. On Windows, 'Failed to open USB device: -5' "
+        "usually means access/driver issue.\n"
+        "- Ensure the ODrive 'Native Interface' is bound to a WinUSB driver (Zadig can install WinUSB).\n"
+        "- Close other programs that might be using the ODrive (ODrive GUI, other scripts).\n"
+        "- Try a different USB port/cable; avoid unpowered hubs.\n"
+        "- If needed, run the terminal as Administrator.\n"
+        "After changing drivers, unplug/replug the ODrive."
+    )
+
+
 def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
     try:
         return getattr(obj, attr)
@@ -77,7 +92,13 @@ def main() -> int:
     while True:
         try:
             print(f"Finding ODrive (timeout={args.timeout}s)...")
-            odrv = odrive.find_any(timeout=args.timeout)
+            try:
+                odrv = odrive.find_any(timeout=args.timeout)
+            except Exception as exc:
+                # If discovery fails on Windows, surface an actionable hint.
+                if sys.platform.startswith("win"):
+                    print(_windows_usb_troubleshooting_hint())
+                raise
             axis = _get_axis(odrv, args.axis)
             enc = axis.encoder
 

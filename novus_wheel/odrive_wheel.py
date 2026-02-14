@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +20,17 @@ from odrive.utils import dump_errors
 
 from .config import ODriveSafetyConfig
 from .errors import CriticalWheelError
+
+
+def _windows_usb_troubleshooting_hint() -> str:
+    return (
+        "Windows USB hint: The ODrive Python API uses libusb. If you see '[UsbDiscoverer] Failed to open USB device: -5', "
+        "it typically means the ODrive interface is not using a WinUSB driver or access is denied.\n"
+        "- Bind the ODrive 'Native Interface' to WinUSB (Zadig).\n"
+        "- Close ODrive GUI/other processes using the device.\n"
+        "- Try a different USB port/cable; avoid hubs.\n"
+        "- Try running as Administrator."
+    )
 
 
 def _safe_get(obj: Any, attr: str, default: Any = None) -> Any:
@@ -62,7 +74,13 @@ class ODriveWheelAxis:
         self._verbose = verbose
         self.cfg = config
 
-        self.odrv = odrive.find_any(timeout=timeout_s)
+        try:
+            self.odrv = odrive.find_any(timeout=timeout_s)
+        except Exception as exc:
+            msg = f"Failed to find/connect to ODrive (timeout={timeout_s}s): {exc}"
+            if sys.platform.startswith("win"):
+                msg = msg + "\n" + _windows_usb_troubleshooting_hint()
+            raise CriticalWheelError(msg) from exc
         self.axis = _safe_get(self.odrv, f"axis{int(config.axis)}")
         if self.axis is None:
             raise CriticalWheelError(f"ODrive has no axis{config.axis}")

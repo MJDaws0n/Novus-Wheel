@@ -31,7 +31,13 @@ Nothing in `scripts/example_spin.py` or `scripts/encoder_live.py` was modified.
 
 1. Install **vJoy** (driver + config tool). Create/enable a device (usually Device 1) with at least an **X axis**.
 2. Ensure `vJoyInterface.dll` is available on PATH (it is installed with vJoy).
-3. Install Python dependencies into your environment (ODrive already appears installed in `odrive-env`).
+3. Ensure the **ODrive USB driver** is set up for the Python tools:
+  - The ODrive Python API talks to the ODrive over **libusb**.
+  - On Windows this usually requires binding the ODrive **Native Interface** to a **WinUSB** driver.
+  - If you see: `[UsbDiscoverer] Failed to open USB device: -5`, it is typically an access/driver issue.
+  - Common fix: use **Zadig** to select the ODrive Native Interface and install/replace the driver with **WinUSB**, then unplug/replug the ODrive.
+  - Also close the ODrive GUI/other scripts that might be using the device, and try running the terminal as Administrator.
+4. Install Python dependencies into your environment (ODrive must be installed in the same venv you run the scripts from).
 
 ## macOS setup (optional)
 

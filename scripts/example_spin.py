@@ -44,7 +44,10 @@ def main() -> None:
             return
 
         # Movement demo
-        od.apply_velocity(5, 60)
+        od.apply_velocity(2, 5)
+        od.apply_velocity(-2, 5)
+        od.apply_velocity(2, 5)
+        od.apply_velocity(-2, 5)
 
 
 if __name__ == "__main__":

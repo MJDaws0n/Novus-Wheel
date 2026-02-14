@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..ffb.effects import EffectState
 
 
 @dataclass(frozen=True)
@@ -40,5 +44,11 @@ class VirtualWheelBackend:
 
     def poll_ffb(self) -> FfbCommand | None:
         """Return the latest aggregated FFB force, if any."""
+
+        return None
+
+    @property
+    def effect_state(self) -> EffectState | None:
+        """Return the per-slot FFB effect state, if available."""
 
         return None
