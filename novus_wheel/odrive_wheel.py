@@ -274,6 +274,28 @@ class ODriveWheelAxis:
         if not math.isfinite(cmd):
             cmd = 0.0
 
+        # Dynamic idle: drop to IDLE when torque is zero so the motor can
+        # truly freewheel (eliminates cogging from the current controller).
+        # Re-enter CLOSED_LOOP_CONTROL when a non-zero command arrives.
+        want_idle = (cmd == 0.0)
+        current_state = int(_safe_get(self.axis, "current_state", 0) or 0)
+
+        if want_idle and current_state == AXIS_STATE_CLOSED_LOOP_CONTROL:
+            try:
+                self.axis.controller.input_torque = 0.0
+                self.axis.requested_state = AXIS_STATE_IDLE
+            except Exception:
+                pass
+            return
+
+        if not want_idle and current_state != AXIS_STATE_CLOSED_LOOP_CONTROL:
+            try:
+                self.axis.requested_state = AXIS_STATE_CLOSED_LOOP_CONTROL
+                # Brief settle; ODrive re-engages the current controller.
+                time.sleep(0.005)
+            except Exception:
+                pass
+
         try:
             self.axis.controller.input_torque = cmd
         except Exception as exc:

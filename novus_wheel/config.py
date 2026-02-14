@@ -30,7 +30,7 @@ class ODriveSafetyConfig:
     override_encoder_cpr: bool = True
     override_encoder_mode: bool = True
     encoder_use_index: bool = False
-    encoder_bandwidth: float = 1000.0
+    encoder_bandwidth: float = 200.0
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,8 @@ class WheelKinematics:
     lock_to_lock_turns: float = 2.0
     # Optional gear ratio: wheel turns per motor turn.
     # If encoder is on the motor but wheel has reduction, set >1.
-    wheel_turns_per_motor_turn: float = 1.0
+    # When set to 0.0 (auto), it is derived from motor/encoder pulley teeth.
+    wheel_turns_per_motor_turn: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,11 @@ class FfbTuning:
     extra_damping_nm_per_turn_s: float = 0.0
 
     # Low-pass filter for torque command (0 disables).
-    torque_lpf_hz: float = 60.0
+    torque_lpf_hz: float = 30.0
+
+    # Torque commands with absolute value below this are zeroed out.
+    # Prevents idle vibration from encoder noise leaking into the motor.
+    torque_deadzone_nm: float = 0.02
 
 
 @dataclass(frozen=True)

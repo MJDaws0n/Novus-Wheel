@@ -66,9 +66,11 @@ def _internal_ffb_force(
     # Soft endstops near lock. endstop_start is a normalized position (0..1).
     es = clamp(float(endstop_start), 0.0, 1.0)
     if float(endstop_k) > 0.0 and abs(pos) > es:
-        # Penetration depth into endstop region.
+        # Penetration depth into endstop region (quadratic for smooth ramp-in).
         d = (abs(pos) - es) / max(1e-6, (1.0 - es))
-        f += -float(endstop_k) * d * _sign(pos)
+        f += -float(endstop_k) * d * d * _sign(pos)
+        # Add velocity damping proportional to penetration to prevent bounce.
+        f += -float(endstop_k) * 0.3 * d * vel
 
     return clamp(f, -1.0, 1.0)
 
@@ -212,14 +214,14 @@ def run(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--wheel-turns-per-motor-turn",
         type=float,
-        default=1.0,
-        help="Wheel turns per motor turn (gear ratio). 1.0 for direct drive; >1 if wheel turns more than motor.",
+        default=0.0,
+        help="Wheel turns per motor turn (gear ratio). 0 = auto-derive from motor/encoder pulley teeth. 1.0 for direct drive.",
     )
     ap.add_argument(
         "--steering-scale",
         type=float,
-        default=1.0,
-        help="Scale the steering axis output (and FFB position input). Use <1.0 if the game turns too much for a given real angle.",
+        default=0.0,
+        help="Scale the steering axis output. 0 = auto (derived from pulley teeth ratio). Use <1.0 if the game turns too much for a given real angle.",
     )
 
     ap.add_argument("--current-limit-a", type=float, default=16.0)
@@ -240,9 +242,21 @@ def run(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-override-encoder-cpr", action="store_true", help="Do not overwrite encoder CPR")
     ap.add_argument("--no-override-encoder-mode", action="store_true", help="Do not overwrite encoder mode")
     ap.add_argument("--use-index", action="store_true", help="Use encoder Z index (ABZ encoders)")
+    ap.add_argument(
+        "--encoder-bandwidth",
+        type=float,
+        default=200.0,
+        help="Encoder bandwidth Hz (lower = smoother but more lag; 100-300 recommended)",
+    )
 
     ap.add_argument("--max-torque-nm", type=float, default=2.0)
-    ap.add_argument("--torque-lpf-hz", type=float, default=60.0)
+    ap.add_argument("--torque-lpf-hz", type=float, default=30.0)
+    ap.add_argument(
+        "--torque-deadzone-nm",
+        type=float,
+        default=0.02,
+        help="Torque commands below this magnitude are zeroed (prevents idle vibration from encoder noise)",
+    )
     ap.add_argument(
         "--torque-slew-rate-nm-per-s",
         type=float,
@@ -268,6 +282,24 @@ def run(argv: list[str] | None = None) -> int:
 
     args = ap.parse_args(argv)
 
+    # Auto-derive wheel_turns_per_motor_turn.
+    motor_teeth = int(args.motor_pulley_teeth)
+    encoder_teeth = int(args.encoder_pulley_teeth)
+    wt_per_mt = float(args.wheel_turns_per_motor_turn)
+    if wt_per_mt == 0.0:
+        # The belt pulley ratio is already accounted for in _effective_encoder_cpr
+        # (ODrive CPR is scaled so pos_estimate reads in motor turns).
+        # Therefore wheel_turns_per_motor_turn is 1.0 for a direct-drive setup
+        # where the wheel is on the motor shaft.
+        wt_per_mt = 1.0
+        print(f"Auto wheel_turns_per_motor_turn = {wt_per_mt:.4f} (encoder CPR already compensates for belt ratio)")
+
+    # Auto-derive steering scale.
+    steering_scale = float(args.steering_scale)
+    if steering_scale == 0.0:
+        steering_scale = 1.0  # No additional scaling needed once ratio is correct.
+        print(f"Auto steering_scale = {steering_scale:.4f}")
+
     cfg = AppConfig(
         odrive=ODriveSafetyConfig(
             axis=int(args.axis),
@@ -277,20 +309,22 @@ def run(argv: list[str] | None = None) -> int:
             pole_pairs=int(args.pole_pairs),
             override_motor_pole_pairs=not bool(args.no_override_motor_pole_pairs),
             encoder_cpr=int(args.encoder_cpr),
-            motor_pulley_teeth=int(args.motor_pulley_teeth),
-            encoder_pulley_teeth=int(args.encoder_pulley_teeth),
+            motor_pulley_teeth=motor_teeth,
+            encoder_pulley_teeth=encoder_teeth,
             override_encoder_cpr=not bool(args.no_override_encoder_cpr),
             override_encoder_mode=not bool(args.no_override_encoder_mode),
             encoder_use_index=bool(args.use_index),
+            encoder_bandwidth=float(args.encoder_bandwidth),
         ),
         wheel=WheelKinematics(
             lock_to_lock_turns=float(args.lock_to_lock_turns),
-            wheel_turns_per_motor_turn=float(args.wheel_turns_per_motor_turn),
+            wheel_turns_per_motor_turn=wt_per_mt,
         ),
         ffb=FfbTuning(
             max_torque_nm=float(args.max_torque_nm),
             torque_lpf_hz=float(args.torque_lpf_hz),
             extra_damping_nm_per_turn_s=float(args.extra_damping),
+            torque_deadzone_nm=float(args.torque_deadzone_nm),
         ),
         loop_hz=float(args.loop_hz),
         calibration_path=str(args.calib),
@@ -321,10 +355,17 @@ def run(argv: list[str] | None = None) -> int:
             if calib is None:
                 print("Calibration: center the wheel, then press Enter...")
                 input()
-                tel = od.read_telemetry()
-                calib = Calibration(center_motor_turns=float(tel.pos_turns))
+                # Average multiple readings to reduce encoder noise.
+                n_samples = 50
+                pos_sum = 0.0
+                for _ in range(n_samples):
+                    tel = od.read_telemetry()
+                    pos_sum += float(tel.pos_turns)
+                    time.sleep(0.01)
+                center = pos_sum / float(n_samples)
+                calib = Calibration(center_motor_turns=center)
                 save_calibration(cfg.calibration_path, calib)
-                print(f"Saved calibration to {cfg.calibration_path}")
+                print(f"Saved calibration to {cfg.calibration_path} (center={center:.5f}, averaged {n_samples} samples)")
 
             # Safety check for calibration drift (common with incremental encoders)
             tel_start = od.read_telemetry()
@@ -340,7 +381,10 @@ def run(argv: list[str] | None = None) -> int:
             # Main loop
             period = 1.0 / max(1.0, float(cfg.loop_hz))
             torque_lpf = _OnePoleLPF(hz=float(cfg.ffb.torque_lpf_hz), initial=0.0)
+            # Position low-pass filter to reduce encoder noise in position readings.
+            pos_lpf = _OnePoleLPF(hz=120.0, initial=0.0)
             last_torque_cmd = 0.0
+            torque_deadzone = float(cfg.ffb.torque_deadzone_nm)
 
             # Velocity sign auto-fix: if ODrive vel_estimate sign is flipped relative to
             # position changes, velocity-based effects (damper/friction) will be inverted.
@@ -365,8 +409,11 @@ def run(argv: list[str] | None = None) -> int:
 
                 tel = od.read_telemetry()
 
+                # Filter raw encoder position to reduce noise-induced jitter.
+                motor_pos_filtered = pos_lpf.update(float(tel.pos_turns), now)
+
                 # Compute both unclamped and clamped normalized position.
-                wheel_turns = (float(tel.pos_turns) - float(calib.center_motor_turns)) * float(
+                wheel_turns = (float(motor_pos_filtered) - float(calib.center_motor_turns)) * float(
                     cfg.wheel.wheel_turns_per_motor_turn
                 )
 
@@ -403,7 +450,7 @@ def run(argv: list[str] | None = None) -> int:
                 # Values in the game's coordinate system (matches what we expose on the virtual axis)
                 pos_game_unclamped = steering_sign * float(pos_unclamped)
                 # Apply user scale before clamping to vJoy range.
-                pos_game_unclamped = float(pos_game_unclamped) * float(args.steering_scale)
+                pos_game_unclamped = float(pos_game_unclamped) * float(steering_scale)
                 pos_game = clamp(float(pos_game_unclamped), -1.0, 1.0)
                 vel_game = steering_sign * float(vel_n)
 
@@ -472,20 +519,38 @@ def run(argv: list[str] | None = None) -> int:
                     force_n = clamp(float(force_n) * float(getattr(args, "game_ffb_gain", 1.0)), -1.0, 1.0)
                 # else ffb=="none": force_n stays 0.0
 
+                # Apply optional software spring/damper/friction overlay on top of
+                # whatever FFB source was used (game or internal).  This makes
+                # --ffb-spring-k, --ffb-damper-b, --ffb-friction work in all modes.
+                overlay = 0.0
+                if float(args.ffb_spring_k) != 0.0:
+                    overlay += -float(args.ffb_spring_k) * float(pos_phys)
+                if float(args.ffb_damper_b) != 0.0:
+                    overlay += -float(args.ffb_damper_b) * float(vel_phys)
+                if float(args.ffb_friction) != 0.0:
+                    overlay += -float(args.ffb_friction) * _sign(float(vel_phys))
+                if overlay != 0.0:
+                    force_n = clamp(float(force_n) + float(overlay), -1.0, 1.0)
+
                 # Hard endstop override: if we are beyond the lock-to-lock range,
                 # add a restoring force + damping to pull the wheel back.
                 #
-                # NOTE: This can feel like a one-sided “runaway” if center calibration is off
-                # or lock-to-lock is misconfigured, because one direction may hit the endstop
-                # region early. Use a small tolerance so tiny overshoots don't slam torque.
+                # Uses a smooth quadratic ramp (soft wall) plus strong velocity-based
+                # damping to prevent oscillation.  The endstop force is calculated in
+                # Nm directly so it scales properly regardless of max_torque_nm.
                 over = abs(float(pos_phys_unclamped)) - 1.0
                 endstop_tol = 0.02
                 endstop_active = over > float(endstop_tol)
                 if endstop_active:
                     inward = -_sign(float(pos_phys_unclamped))
-                    pull = clamp(float(over - endstop_tol) * 8.0, 0.0, 1.0)
-                    brake = clamp(-0.3 * float(vel_phys), -1.0, 1.0)
-                    force_n = clamp(float(force_n) + float(inward) * float(pull) + float(brake), -1.0, 1.0)
+                    # Linear ramp — strong initial resistance to prevent overshoot.
+                    penetration = float(over - endstop_tol)
+                    pull = clamp(penetration * 8.0, 0.0, 1.0)
+                    # Heavy velocity damping to absorb kinetic energy and kill bounce.
+                    brake = clamp(-0.8 * float(vel_phys), -1.0, 1.0)
+                    # Override game FFB entirely in the endstop zone so the game
+                    # can't fight the restoring force and cause oscillation.
+                    force_n = clamp(float(inward) * float(pull) + float(brake), -1.0, 1.0)
 
                 # Extra damping based on real wheel velocity (Nm per turn/s).
                 # NOTE: `wheel_turns_per_motor_turn` impacts both kinematics and torque.
@@ -525,6 +590,12 @@ def run(argv: list[str] | None = None) -> int:
                     last_torque_cmd = float(torque_cmd)
 
                 torque_cmd = torque_lpf.update(torque_cmd, now)
+
+                # Torque deadzone: zero out very small commands that come from
+                # encoder noise rather than real FFB.  This lets the motor
+                # freewheel when no meaningful force is requested.
+                if abs(float(torque_cmd)) < torque_deadzone:
+                    torque_cmd = 0.0
 
                 if bool(args.invert_motor):
                     torque_cmd = -torque_cmd
