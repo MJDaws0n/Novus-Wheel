@@ -443,10 +443,12 @@ def run(argv: list[str] | None = None) -> int:
                         endstop_start=float(args.ffb_endstop_start),
                     )
                 elif str(args.ffb) == "game":
-                    # Work out whether directional effects need sign-flipping.
-                    # Condition effects (spring/damper/friction/inertia) derive sign
-                    # from physics so must NOT be flipped by steering or --invert-ffb.
-                    need_dir_invert = (float(steering_sign) < 0.0) ^ bool(getattr(args, "invert_ffb", False))
+                    # --invert-ffb flips only directional effects (constant force from game).
+                    # Condition effects (damper, spring, friction) derive correct sign from
+                    # position/velocity physics and must NOT be flipped.
+                    need_dir_invert = bool(getattr(args, "invert_ffb", False))
+                    if float(steering_sign) < 0.0:
+                        need_dir_invert = not need_dir_invert
 
                     # Prefer the per-slot effect state (vJoy backend).
                     eff_state = getattr(backend, "effect_state", None)
@@ -462,7 +464,7 @@ def run(argv: list[str] | None = None) -> int:
                         if cmd is not None:
                             force_n = clamp(float(cmd.force), -1.0, 1.0)
                             game_ffb_raw = cmd
-                        # Legacy path: no per-slot model, apply uniform flip.
+                        # Legacy path: apply uniform flip.
                         force_n = float(steering_sign) * float(force_n)
                         if bool(getattr(args, "invert_ffb", False)):
                             force_n = -float(force_n)

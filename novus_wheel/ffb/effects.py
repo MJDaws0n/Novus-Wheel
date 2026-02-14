@@ -232,12 +232,11 @@ class EffectState:
         vel : float
             Normalized wheel velocity.
         invert_directional : bool
-            If *True*, flip the sign of **directional** effects (constant force,
-            ramp, periodic) while leaving **condition** effects (spring, damper,
-            friction, inertia) untouched.  This is the correct way to handle
-            ``--invert-ffb`` / steering-sign because condition effects derive
-            their sign from physics (they oppose displacement or velocity) and
-            must not be double-inverted.
+            If *True*, flip the sign of **directional** effects only
+            (constant force, ramp, periodic).  Condition effects (spring,
+            damper, friction, inertia) are left untouched because they
+            compute their own sign from position/velocity physics and are
+            already correct.
         """
         if self.is_stale:
             return 0.0
@@ -269,8 +268,6 @@ class EffectState:
         except RuntimeError:
             return 0.0
 
-        # Condition effect types derive their sign from physics (oppose motion /
-        # displacement) so they must NOT be flipped by a directional inversion.
         _CONDITION_TYPES = {ET_SPRING, ET_DAMPER, ET_FRICTION, ET_INERTIA}
         dir_sign = -1.0 if invert_directional else 1.0
 
@@ -279,8 +276,9 @@ class EffectState:
                 continue
 
             f = _slot_force(slot, pos=pos, vel=float(vel_use), friction_ramp=float(self.friction_ramp))
-            # Only flip directional (non-condition) effects.
-            if slot.effect_type not in _CONDITION_TYPES:
+            # Flip condition effects (damper/spring/friction/inertia) only;
+            # directional effects (constant force from game) are already correct.
+            if slot.effect_type in _CONDITION_TYPES:
                 f *= dir_sign
             total += f * slot.gain
         total *= self.device_gain
