@@ -104,3 +104,8 @@ If you already saved correct values on the ODrive and don't want the app to over
 ```bash
 python3 scripts/novus_wheel.py --no-override-encoder-cpr --no-override-motor-pole-pairs
 ```
+
+Run for my setup:
+```bash
+python.exe .\novus_wheel.py --recalibrate --max-torque-nm 1 --torque-lpf-hz 500 --ffb-damper-b 0 --ffb-endstop-k 0.35 --ffb-endstop-start 0.95 --invert-steering --backend vjoy --game-ffb-gain 0.2 --encoder-cpr 4000
+```
